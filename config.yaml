@@ -1,0 +1,27 @@
+paths:
+  raw: data/raw
+  processed: data/processed
+
+files:
+  business: Business Data 2023.csv
+  failure: Failure Data 2023.xlsx
+  maintenance: Maintenance Cost 2023.csv
+  pricing: Pricing.csv
+  status: Status Description.csv
+  cause_codes: System Component Cause Code.csv
+
+# unit_status codes -> event class. Codes not listed are "unassigned" and
+# are reported but kept out of the risk totals until a decision is made.
+event_scope:
+  risk: [FO, FD, FD.MP, SF]
+  loss_event: [MO, PD, MD, SUD, FD.SYS]
+  excluded: [NC, RS, PO]
+  # failure_impact values that count as risk whatever the status code
+  risk_impacts: [Tripped]
+
+opportunity_loss:
+  # bpp_rp_kwh or selling_price_rp_kwh, looked up for the month the loss occurred
+  price_basis: bpp_rp_kwh
+  # Set a number (Rp/kWh) to override the monthly price for every unit,
+  # or a mapping such as {Unit 3: 900, Unit 4: 950}. null = use the monthly price.
+  manual_price_rp_per_kwh: null
