@@ -1,3 +1,5 @@
+import textwrap
+
 import altair as alt
 import streamlit as st
 
@@ -112,10 +114,23 @@ def pareto_table(events):
     return t
 
 
-def pareto_chart(t, top=15):
-    """Bars of loss output per failure mode, with the cumulative share as a line."""
+def _wrap_label(text, width, max_lines=8):
+    """Wrap onto lines of `width` characters; keep the first `max_lines` and mark the cut with an ellipsis."""
+    lines = textwrap.wrap(text, width, break_long_words=False)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines - 1] + [lines[max_lines - 1] + "..."]
+    return "\n".join(lines)
+
+
+def pareto_chart(t, top=10):
+    """Bars of loss output per failure mode, with the cumulative share as a line.
+    X labels are wrapped onto several lines (Vega draws "\n" as a line break)."""
     d = t.head(top).assign(cumulative_share=lambda x: x["cumulative_pct"] / 100)
-    x = alt.X("failure_mode:N", sort=None, title="Failure mode", axis=alt.Axis(labelAngle=-40, labelLimit=260))
+    wrap = max(8, min(18, 100 // len(d)))  # fewer bars leave room for wider labels
+    d["label"] = d["failure_mode"].map(lambda m: _wrap_label(m, wrap))
+    x = alt.X("label:N", sort=None, title="Failure mode",
+              axis=alt.Axis(labelAngle=0, labelLimit=0, labelOverlap=False, labelLineHeight=11, labelFontSize=10, labelAlign="center",
+                            labelExpr="split(datum.label, '\\n')"))
     bars = alt.Chart(d).mark_bar().encode(
         x=x, y=alt.Y("loss_output_mwh:Q", title="Loss output (MWh)"),
         tooltip=["failure_mode", alt.Tooltip("loss_output_mwh:Q", title="Loss output (MWh)", format=",.0f"),
@@ -125,6 +140,15 @@ def pareto_chart(t, top=15):
         x=x, y=alt.Y("cumulative_share:Q", title="Cumulative share", axis=alt.Axis(format="%"),
                      scale=alt.Scale(domain=[0, 1])))
     return alt.layer(bars, line).resolve_scale(y="independent")
+
+
+def expected_loss_chart(df, value, title, selected):
+    """Expected annual loss per status; the status chosen in the dropdown is highlighted."""
+    return alt.Chart(df).mark_bar().encode(
+        x=alt.X("unit_status:N", sort=list(RANK_STATUS), title=None, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y(f"{value}:Q", title=title),
+        opacity=alt.condition(alt.datum.unit_status == selected, alt.value(1), alt.value(0.35)),
+        tooltip=["unit_status", alt.Tooltip(f"{value}:Q", title=title, format=",.0f")])
 
 
 with tab_rank:
@@ -139,10 +163,21 @@ with tab_rank:
             st.metric("Expected annual loss (MWh)", f"{rt['expected_annual_loss_mwh'].sum():,.0f}", border=True)
             st.metric("Events", f"{int(rt['events'].sum()):,}", border=True)
         pt = pareto_table(chosen)
-        with st.container(border=True):
+        by_status = (risk_table(scoped[scoped["unit_status"].isin(RANK_STATUS)], data["business"],
+                                by=["unit", "unit_status"])
+                     .groupby("unit_status", as_index=False)[["expected_annual_loss_rp", "expected_annual_loss_mwh"]].sum()
+                     .assign(loss_m=lambda t: t["expected_annual_loss_rp"] / 1e6))
+        left, right = st.columns([1, 3])
+        with left.container(border=True):
+            st.subheader("Expected loss")
+            st.altair_chart(expected_loss_chart(by_status, "loss_m", "Rp million per year", status), height=220,
+                            alt="Expected annual loss in Rp million for FO, MO, FD and MD, selected status highlighted")
+            st.altair_chart(expected_loss_chart(by_status, "expected_annual_loss_mwh", "MWh per year", status),
+                            height=220, alt="Expected annual loss in MWh for FO, MO, FD and MD, selected status highlighted")
+        with right.container(border=True):
             st.subheader("Pareto of loss output")
             st.altair_chart(pareto_chart(pt),
-                            alt=f"Pareto chart of loss output in MWh by failure mode for {status} events, top 15")
+                            alt=f"Pareto chart of loss output in MWh by failure mode for {status} events, top 10")
         with st.container(border=True):
             st.subheader("Pareto loss output")
             st.dataframe(
