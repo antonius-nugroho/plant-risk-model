@@ -129,7 +129,7 @@ def pareto_chart(t, top=10):
     wrap = max(8, min(18, 100 // len(d)))  # fewer bars leave room for wider labels
     d["label"] = d["failure_mode"].map(lambda m: _wrap_label(m, wrap))
     x = alt.X("label:N", sort=None, title="Failure mode",
-              axis=alt.Axis(labelAngle=0, labelLimit=0, labelOverlap=False, labelLineHeight=11, labelFontSize=10, labelAlign="center",
+              axis=alt.Axis(labelAngle=0, labelLimit=0, labelOverlap=False, labelLineHeight=11, labelFontSize=15, labelAlign="center",
                             labelExpr="split(datum.label, '\\n')"))
     bars = alt.Chart(d).mark_bar().encode(
         x=x, y=alt.Y("loss_output_mwh:Q", title="Loss output (MWh)"),
