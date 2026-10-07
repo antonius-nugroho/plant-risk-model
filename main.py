@@ -2,7 +2,7 @@
 import argparse
 
 from src.risk_model.data_loader import ROOT
-from src.risk_model.opportunity import opportunity_loss
+from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
 from src.risk_model.risk import risk_table
 
@@ -28,7 +28,9 @@ def main():
 
     print("Events by class:\n", failures.groupby("event_class").size().to_string(), "\n")
     print("Events with stop < start:", int(failures.stop_before_start.sum()))
-    print("Missing price rows:", int(seg.price_rp_kwh.isna().sum()), "| price source:", seg.price_source.iloc[0])
+    print("Price source:", seg.price_source.iloc[0])
+    for unit, months in missing_prices(seg).items():
+        print(f"WARNING {unit}: no price for {', '.join(months)} (extend data/raw/Pricing.csv)")
     print("\nOpportunity loss (Rp million) by unit and class:")
     print((seg.pivot_table(index="unit", columns="event_class", values="opportunity_loss_rp", aggfunc="sum") / 1e6).round(0).to_string())
     print("\nTop 8 risks (expected annual loss, Rp million):")

@@ -36,5 +36,11 @@ def attach_price(segments, pricing, price_basis="bpp_rp_kwh", manual_price=None)
     return out
 
 
+def missing_prices(priced):
+    """Unit-months with lost energy but no price (e.g. Pricing.csv has not been extended yet)."""
+    gap = priced[priced["price_rp_kwh"].isna() & (priced["event_class"] != "excluded")]
+    return gap.groupby("unit")["month"].agg(lambda m: sorted(m.dt.strftime("%b-%y").unique()))
+
+
 def opportunity_loss(events, pricing, price_basis="bpp_rp_kwh", manual_price=None):
     return attach_price(split_by_month(events), pricing, price_basis, manual_price)

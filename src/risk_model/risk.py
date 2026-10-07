@@ -30,6 +30,8 @@ def risk_table(priced, business, by=("unit", "system")):
     this equals the observed opportunity loss.
     """
     by = list(by)
+    # Exposure only counts years that have failure data, so rates stay per operating year.
+    business = business[business["month"].dt.year.isin(priced["month"].dt.year.unique())]
     events = priced.drop_duplicates("event_idx")
     ev = events.groupby(by).agg(events=("event_idx", "size"),
                                 downtime_hours=("failure_duration_hours", "sum"),

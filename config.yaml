@@ -3,20 +3,21 @@ paths:
   column_description: data/column_description
   processed: data/processed
 
+# Data files are discovered in paths.raw by glob pattern, so a new year only needs its files dropped in.
 files:
-  business: Business Data 2023.csv
-  failure: Failure Data 2023.xlsx
-  maintenance: Maintenance Cost 2023.csv
-  pricing: Pricing.csv
-  status: Status Description.csv
+  business: "Business Data *.csv"
+  failure: "Failure Data *.*"
+  maintenance: "Maintenance Cost *.csv"
+  pricing: "Pricing*.csv"
+  # reference table, read from paths.column_description
   cause_codes: System Component Cause Code.csv
 
 # unit_status codes -> event class. Codes not listed are "unassigned" and
 # are reported but kept out of the risk totals until a decision is made.
 event_scope:
   risk: [FO, FD, FD.MP, SF]
-  loss_event: [MO, PD, MD, SUD, FD.SYS]
-  excluded: [NC, RS, PO]
+  loss_event: [MO, PD, MD, FD.SYS]
+  excluded: [NC, RS, PO, PE, SHD, SUD]
   # failure_impact values that count as risk whatever the status code
   risk_impacts: [Tripped]
 

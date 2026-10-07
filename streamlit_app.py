@@ -1,6 +1,7 @@
 import streamlit as st
 
-from src.risk_model.opportunity import opportunity_loss
+from src.risk_model.data_loader import data_signature
+from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
 from src.risk_model.risk import risk_matrix, risk_table
 
@@ -10,14 +11,16 @@ PRICE_BASIS = {"BPP": "bpp_rp_kwh", "Selling price": "selling_price_rp_kwh"}
 CLASS_LABEL = {"risk": "Risk", "loss_event": "Loss event", "excluded": "Excluded"}
 
 
-@st.cache_data(show_spinner="Loading plant data...")
-def get_data():
+# `sig` changes whenever a file in data/raw is added or edited, so new data (a longer
+# Pricing.csv, another year) is picked up on the next rerun without restarting the app.
+@st.cache_data(show_spinner="Loading plant data...", max_entries=2)
+def get_data(sig):
     return load_all()
 
 
-@st.cache_data(show_spinner=False)
-def get_priced(basis, manual):
-    d = get_data()
+@st.cache_data(show_spinner=False, max_entries=8)
+def get_priced(sig, basis, manual):
+    d = get_data(sig)
     return opportunity_loss(d["failures"], d["pricing"], basis, manual)
 
 
@@ -25,16 +28,19 @@ def rp_m(x):
     return f"{x / 1e6:,.0f}"
 
 
-data = get_data()
+sig = data_signature()
+data = get_data(sig)
 units = sorted(data["failures"]["unit"].unique())
+years = sorted(data["failures"]["timestamp_start"].dt.year.unique())
 
 # Sidebar: every input that changes the numbers lives here.
 with st.sidebar:
     st.header("Settings")
     sel_units = st.pills("Units", units, selection_mode="multi", default=units)
+    sel_years = st.pills("Years", years, selection_mode="multi", default=years)
     classes = st.pills("Event classes", list(CLASS_LABEL.values()), selection_mode="multi", default=["Risk"],
-                       help="Risk: FO, FD, FD.MP, SF and trips. Loss event: MO, PD, MD, SUD, FD.SYS. "
-                            "Excluded: NC, RS, PO.")
+                       help="Risk: FO, FD, FD.MP, SF and trips. Loss event: MO, PD, MD, FD.SYS. "
+                            "Excluded: NC, RS, PO, PE, SHD, SUD.")
     st.subheader("Price of lost energy")
     price_mode = st.segmented_control("Price", ["BPP", "Selling price", "Manual"], default="BPP",
                                       label_visibility="collapsed")
@@ -47,13 +53,18 @@ with st.sidebar:
     group = st.segmented_control("Rank by", ["System", "Component"], default="System")
 
 st.title("Plant operational risk model")
-if not sel_units or not classes:
-    st.info("Select at least one unit and one event class.", icon=":material/info:")
+if not sel_units or not sel_years or not classes:
+    st.info("Select at least one unit, year and event class.", icon=":material/info:")
     st.stop()
 
-priced = get_priced(PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
+priced = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
 inv = {v: k for k, v in CLASS_LABEL.items()}
-priced = priced[priced["unit"].isin(sel_units) & priced["event_class"].isin([inv[c] for c in classes])]
+priced = priced[priced["unit"].isin(sel_units) & priced["month"].dt.year.isin(sel_years)
+                & priced["event_class"].isin([inv[c] for c in classes])]
+gaps = missing_prices(priced) if price_mode != "Manual" else []
+for unit, months in (gaps.items() if len(gaps) else []):
+    st.warning(f"{unit}: no price in Pricing.csv for {', '.join(months)}. Those losses are not counted. "
+               "Add the months to data/raw/Pricing.csv, or use a manual price.", icon=":material/warning:")
 if priced.empty:
     st.warning("No events match these settings.", icon=":material/warning:")
     st.stop()

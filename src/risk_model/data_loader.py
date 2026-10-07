@@ -7,6 +7,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def data_signature(cfg=None):
+    """Name, size and modified time of every raw file; changes whenever a file is added or edited."""
+    cfg = cfg or load_config()
+    return tuple((p.name, p.stat().st_size, p.stat().st_mtime_ns)
+                 for p in sorted((ROOT / cfg["paths"]["raw"]).glob("*")) if p.is_file() and p.name != ".gitkeep")
+
+
 def load_config(path=ROOT / "config.yaml"):
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -23,12 +30,24 @@ def _read_csv(path, **kw):
     return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig", **kw)
 
 
+def find_files(folder, pattern):
+    """Every file in `folder` matching the glob pattern (one file per year), oldest name first."""
+    files = sorted(p for p in Path(folder).glob(pattern) if not p.name.startswith("~$"))
+    if not files:
+        raise FileNotFoundError(f"No file matching '{pattern}' in {folder}")
+    return files
+
+
 def _month(series):
     return pd.to_datetime(series.str.strip(), format="%b-%y")
 
 
-def load_business(raw, name):
-    df = _read_csv(raw / name)
+def load_business(raw, pattern):
+    return pd.concat([_business(p) for p in find_files(raw, pattern)], ignore_index=True)
+
+
+def _business(path):
+    df = _read_csv(path)
     df.columns = [c.strip() for c in df.columns]
     out = pd.DataFrame({"month": _month(df["end_of_month"]), "unit": df["unit"].str.strip()})
     for c in df.columns.drop(["end_of_month", "unit"]):
@@ -36,8 +55,12 @@ def load_business(raw, name):
     return out
 
 
-def load_pricing(raw, name):
-    df = _read_csv(raw / name)
+def load_pricing(raw, pattern):
+    return pd.concat([_pricing(p) for p in find_files(raw, pattern)], ignore_index=True).drop_duplicates(["month", "unit"])
+
+
+def _pricing(path):
+    df = _read_csv(path)
     df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
     out = pd.DataFrame({"month": _month(df["month"]), "unit": df["unit_name"].str.strip()})
     for c in ["coal_price_rp_per_ton", "biomass_price_rp_per_ton", "bpp_rp_kwh", "selling_price_rp_kwh"]:
@@ -45,9 +68,13 @@ def load_pricing(raw, name):
     return out
 
 
-def load_maintenance(raw, name):
+def load_maintenance(raw, pattern):
+    return pd.concat([_maintenance(p) for p in find_files(raw, pattern)], ignore_index=True)
+
+
+def _maintenance(path):
     """Plant-level (no unit column). Negative expenses are kept and flagged."""
-    df = _read_csv(raw / name)
+    df = _read_csv(path)
     df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
     out = pd.DataFrame({
         "month": _month(df["Month"]),
@@ -70,11 +97,28 @@ def load_cause_codes(raw, name):
                               "Component Name": "component"})[["failure_cause_code", "system", "component"]]
 
 
-def load_failures(raw, name, cause_codes):
-    df = pd.read_excel(raw / name)
-    df["unit"] = df["unit_no"].str.strip()
-    df["unit_status"] = df["unit_status"].str.strip()
-    df["failure_cause_code"] = df["failure_cause_code"].str.strip()
+NUMERIC_FAILURE_COLS = ["power_gross_realization", "power_net_realization", "loss_output_mw",
+                        "failure_duration_hours", "loss_output_mwh"]
+
+
+def _read_failure_file(path):
+    """The failure log is an .xlsx (typed) or a ';' CSV (text dates, Indonesian numbers)."""
+    if path.suffix.lower() in (".xlsx", ".xls"):
+        return pd.read_excel(path)
+    df = _read_csv(path)
+    df.columns = [c.strip() for c in df.columns]
+    for c in ("timestamp_start", "timestamp_stop"):
+        df[c] = pd.to_datetime(df[c].str.strip(), format="%d %b %Y %H:%M")
+    for c in NUMERIC_FAILURE_COLS:
+        df[c] = to_number(df[c])
+    return df
+
+
+def load_failures(raw, pattern, cause_codes):
+    df = pd.concat([_read_failure_file(p) for p in find_files(raw, pattern)], ignore_index=True)
+    for c in ("unit_no", "unit_status", "failure_cause_code", "failure_impact"):
+        df[c] = df[c].astype("string").str.strip()
+    df["unit"] = df["unit_no"]
     df = df.merge(cause_codes, on="failure_cause_code", how="left")
     blank = df["failure_cause_code"].isna()
     df.loc[blank, ["system", "component"]] = "Unclassified"
