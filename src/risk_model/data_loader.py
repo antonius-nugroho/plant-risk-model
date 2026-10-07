@@ -1,6 +1,7 @@
 """Load and clean the raw plant files (Indonesian number format, '-' as missing)."""
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -23,6 +24,12 @@ def to_number(series):
     """'1.234.567,89' -> 1234567.89; '-' and blanks -> NaN."""
     s = series.astype("string").str.strip().replace({"-": pd.NA, "": pd.NA})
     s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce")
+
+
+def to_decimal(series):
+    """Small values that use ',' or '.' as the decimal mark (e.g. days: '12,540' and '12.54' both mean 12.54)."""
+    s = series.astype("string").str.strip().str.replace(",", ".", regex=False)
     return pd.to_numeric(s, errors="coerce")
 
 
@@ -128,3 +135,24 @@ def load_failures(raw, pattern, cause_codes):
     df["event_end"] = df["timestamp_start"] + pd.to_timedelta(df["failure_duration_hours"], unit="h")
     df["stop_before_start"] = df["timestamp_stop"] < df["timestamp_start"]
     return df
+
+
+MAX_PLAUSIBLE_RESERVE_DAYS = 40  # readings run 3-21; larger values are typing or conversion errors (e.g. Excel date serials)
+
+
+def load_coal(raw, pattern):
+    """Daily coal monitoring (plant level; all coal quantities are in tons). Only the reported
+    coal reserve operations days are used. Implausible readings are blanked and flagged."""
+    frames = []
+    for path in find_files(raw, pattern):
+        df = _read_csv(path)
+        df.columns = [c.strip() for c in df.columns]
+        frames.append(pd.DataFrame({
+            "date": pd.to_datetime(df["timestamp"].str.strip(), format="%d/%m/%Y"),
+            "coal_reserve_days": to_decimal(df["coal reserve operations"]),
+        }))
+    coal = pd.concat(frames, ignore_index=True).drop_duplicates("date").sort_values("date", ignore_index=True)
+    bad = ~coal["coal_reserve_days"].between(0, MAX_PLAUSIBLE_RESERVE_DAYS)
+    coal["reading_invalid"] = bad
+    coal.loc[bad, "coal_reserve_days"] = np.nan
+    return coal

@@ -9,6 +9,7 @@ files:
   failure: "Failure Data *.*"
   maintenance: "Maintenance Cost *.csv"
   pricing: "Pricing*.csv"
+  coal: "Coal Monitoring *.csv"
   # reference table, read from paths.column_description
   cause_codes: System Component Cause Code.csv
 

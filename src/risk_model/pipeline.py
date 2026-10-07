@@ -1,6 +1,6 @@
 """Load, clean and classify everything once; shared by main.py and the Streamlit app."""
 from .classify import classify_events
-from .data_loader import (ROOT, load_business, load_cause_codes, load_config, load_failures,
+from .data_loader import (ROOT, load_business, load_cause_codes, load_coal, load_config, load_failures,
                           load_maintenance, load_pricing)
 
 
@@ -13,6 +13,7 @@ def load_all():
         "cfg": cfg,
         "business": load_business(raw, f["business"]),
         "pricing": load_pricing(raw, f["pricing"]),
+        "coal": load_coal(raw, f["coal"]),
         "maintenance": load_maintenance(raw, f["maintenance"]),
         "failures": classify_events(failures, cfg["event_scope"]),
     }

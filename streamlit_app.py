@@ -4,6 +4,7 @@ import altair as alt
 import streamlit as st
 
 from src.risk_model.data_loader import data_signature
+from src.risk_model.kpis import KPI_NOTES, KPI_SPECS, monthly_kpis
 from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
 from src.risk_model.risk import risk_matrix, risk_table
@@ -82,8 +83,8 @@ with st.container(horizontal=True):
     st.metric("Opportunity loss (Rp million)", rp_m(priced["opportunity_loss_rp"].sum()), border=True)
     st.metric("Downtime (hours)", f"{events['failure_duration_hours'].sum():,.0f}", border=True)
 
-tab_rank, tab_matrix, tab_trend, tab_events, tab_quality = st.tabs(
-    ["Ranking", "Risk matrix", "Monthly loss", "Events", "Data checks"])
+tab_rank, tab_matrix, tab_trend, tab_events, tab_quality, tab_kpi = st.tabs(
+    ["Ranking", "Risk matrix", "Monthly loss", "Events", "Data checks", "KPI"])
 
 RANK_STATUS = data["cfg"]["ranking_statuses"]
 RANK_COLS = {
@@ -149,6 +150,18 @@ def expected_loss_chart(df, value, title, selected):
         y=alt.Y(f"{value}:Q", title=title),
         opacity=alt.condition(alt.datum.unit_status == selected, alt.value(1), alt.value(0.35)),
         tooltip=["unit_status", alt.Tooltip(f"{value}:Q", title=title, format=",.0f")])
+
+
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def kpi_chart(k, col, label, zero):
+    """One KPI over the months Jan-Dec, one line per selected year."""
+    return alt.Chart(k).mark_line(point=True).encode(
+        x=alt.X("month_name:N", sort=MONTH_NAMES, title="Month", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y(f"{col}:Q", title=label, scale=alt.Scale(zero=zero)),
+        color=alt.Color("year:N", title="Year"),
+        tooltip=["year", "month_name", alt.Tooltip(f"{col}:Q", title=label, format=",.2f")])
 
 
 with tab_rank:
@@ -219,11 +232,13 @@ with tab_events:
 
 with tab_quality:
     all_events = data["failures"]
-    cols = st.columns(3, border=True)
+    cols = st.columns(4, border=True)
     cols[0].metric("Events with no cause code", f"{(all_events['system'] == 'Unclassified').sum():,}")
     cols[1].metric("Events with stop before start", f"{int(all_events['stop_before_start'].sum()):,}")
     neg = data["maintenance"]["is_negative"].sum()
     cols[2].metric("Negative maintenance entries", f"{int(neg):,}")
+    cols[3].metric("Coal reserve readings ignored", f"{int(data['coal']['reading_invalid'].sum()):,}",
+                   help="Daily coal reserve days above 40 are treated as errors and left out of the monthly average.")
     st.markdown(
         "- Duration comes from `failure_duration_hours`; the lost MWh agrees with it.\n"
         "- Events that cross a month boundary are split by hours, each part priced at its own month.\n"
@@ -231,3 +246,22 @@ with tab_quality:
     st.subheader("Maintenance cost")
     st.dataframe(data["maintenance"], hide_index=True, alt="Maintenance cost by month and type",
                  column_config={"expenses_rp": st.column_config.NumberColumn("Expenses (Rp)", format="%,.0f")})
+
+with tab_kpi:
+    kpi_years = sorted(data["business"]["month"].dt.year.unique())
+    kpi_sel = st.multiselect("Years", kpi_years, default=kpi_years[-1:], key="kpi_years")
+    st.caption("Totals and rates cover the units selected in the sidebar.")
+    if not kpi_sel:
+        st.info("Select at least one year.", icon=":material/info:")
+    else:
+        kp = monthly_kpis(data["business"], sel_units, data["coal"])
+        kp = kp[kp["month"].dt.year.isin(kpi_sel)]
+        for i in range(0, len(KPI_SPECS), 2):
+            for col, (key, title, unit_label, zero) in zip(st.columns(2), KPI_SPECS[i:i + 2]):
+                with col.container(border=True):
+                    st.subheader(f"{title} ({unit_label})")
+                    if kp[key].notna().any():
+                        st.altair_chart(kpi_chart(kp, key, unit_label, zero), alt=f"{title} by month")
+                    else:
+                        st.info("No data available for this KPI.", icon=":material/info:")
+                    st.caption(KPI_NOTES[key])
