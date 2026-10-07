@@ -1,3 +1,4 @@
+import altair as alt
 import streamlit as st
 
 from src.risk_model.data_loader import data_signature
@@ -38,9 +39,9 @@ with st.sidebar:
     st.header("Settings")
     sel_units = st.pills("Units", units, selection_mode="multi", default=units)
     sel_years = st.pills("Years", years, selection_mode="multi", default=years)
-    classes = st.pills("Event classes", list(CLASS_LABEL.values()), selection_mode="multi", default=["Risk"],
-                       help="Risk: FO, FD, FD.MP, SF and trips. Loss event: MO, PD, MD, FD.SYS. "
-                            "Excluded: NC, RS, PO, PE, SHD, SUD.")
+    classes = st.pills("Event classes", list(CLASS_LABEL.values()), selection_mode="multi", default=["Risk", "Loss event"],
+                       help="Risk: FD.MP, SF and trips with other statuses. Loss event: FO, MO, FD, MD, PD, FD.SYS "
+                            "(candidates to become risk). Excluded: NC, RS, PO, PE, SHD, SUD.")
     st.subheader("Price of lost energy")
     price_mode = st.segmented_control("Price", ["BPP", "Selling price", "Manual"], default="BPP",
                                       label_visibility="collapsed")
@@ -59,9 +60,9 @@ if not sel_units or not sel_years or not classes:
 
 priced = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
 inv = {v: k for k, v in CLASS_LABEL.items()}
-priced = priced[priced["unit"].isin(sel_units) & priced["month"].dt.year.isin(sel_years)
-                & priced["event_class"].isin([inv[c] for c in classes])]
-gaps = missing_prices(priced) if price_mode != "Manual" else []
+scoped = priced[priced["unit"].isin(sel_units) & priced["month"].dt.year.isin(sel_years)]
+priced = scoped[scoped["event_class"].isin([inv[c] for c in classes])]
+gaps = missing_prices(scoped) if price_mode != "Manual" else []
 for unit, months in (gaps.items() if len(gaps) else []):
     st.warning(f"{unit}: no price in Pricing.csv for {', '.join(months)}. Those losses are not counted. "
                "Add the months to data/raw/Pricing.csv, or use a manual price.", icon=":material/warning:")
@@ -82,35 +83,69 @@ with st.container(horizontal=True):
 tab_rank, tab_matrix, tab_trend, tab_events, tab_quality = st.tabs(
     ["Ranking", "Risk matrix", "Monthly loss", "Events", "Data checks"])
 
+RANK_STATUS = data["cfg"]["ranking_statuses"]
+RANK_COLS = {
+    "events": st.column_config.NumberColumn("Events"),
+    "downtime_hours": st.column_config.NumberColumn("Downtime (h)", format="%.0f"),
+    "mean_repair_hours": st.column_config.NumberColumn("Mean repair (h)", format="%.1f"),
+    "lost_mwh": st.column_config.NumberColumn("Lost MWh", format="%,.0f"),
+    "opportunity_loss_rp": st.column_config.NumberColumn("Opportunity loss (Rp)", format="%,.0f"),
+    "events_per_year": st.column_config.NumberColumn("Events/yr", format="%.1f"),
+    "mtbf_hours": st.column_config.NumberColumn("MTBF (h)", format="%.0f"),
+    "mean_loss_per_event_rp": st.column_config.NumberColumn("Mean loss/event (Rp)", format="%,.0f"),
+    "expected_annual_loss_rp": st.column_config.NumberColumn("Expected annual loss (Rp)", format="%,.0f"),
+    "expected_annual_loss_mwh": st.column_config.NumberColumn("Expected annual loss (MWh)", format="%,.0f"),
+    "likelihood": st.column_config.NumberColumn("L (1-5)"),
+    "consequence": st.column_config.NumberColumn("C (1-5)"),
+    "risk_score": st.column_config.NumberColumn("Score"),
+    "risk_band": st.column_config.TextColumn("Band"),
+}
+
+
+def pareto_chart(table, by, value, axis_title):
+    """Bars sorted by loss, with the cumulative share of the total as a line."""
+    d = table.sort_values(value, ascending=False, ignore_index=True)
+    d["group"] = d[by].astype(str).agg(" / ".join, axis=1)
+    d["cumulative_share"] = d[value].cumsum() / d[value].sum()
+    d = d.head(15)
+    x = alt.X("group:N", sort=None, title=None, axis=alt.Axis(labelAngle=-40, labelLimit=220))
+    bars = alt.Chart(d).mark_bar().encode(
+        x=x, y=alt.Y(f"{value}:Q", title=axis_title),
+        tooltip=["group", alt.Tooltip(f"{value}:Q", format=",.0f"), alt.Tooltip("cumulative_share:Q", format=".0%")])
+    line = alt.Chart(d).mark_line(point=True, color="orange").encode(
+        x=x, y=alt.Y("cumulative_share:Q", title="Cumulative share", axis=alt.Axis(format="%"),
+                     scale=alt.Scale(domain=[0, 1])))
+    return alt.layer(bars, line).resolve_scale(y="independent")
+
+
 with tab_rank:
-    top = table.head(15).assign(label=lambda t: t[by].astype(str).agg(" / ".join, axis=1),
-                                loss_m=lambda t: t["expected_annual_loss_rp"] / 1e6)
-    with st.container(border=True):
-        st.subheader("Expected annual loss (Rp million)")
-        st.bar_chart(top, x="label", y="loss_m", horizontal=True, sort="-loss_m",
-                     alt="Top 15 groups by expected annual opportunity loss")
-    with st.container(border=True):
-        st.subheader("Risk table")
-        st.dataframe(
-            table.drop(columns=["period_hours", "service_hours"]), hide_index=True,
-            alt="Risk table by group",
-            column_config={
-                "events": st.column_config.NumberColumn("Events"),
-                "downtime_hours": st.column_config.NumberColumn("Downtime (h)", format="%.0f"),
-                "mean_repair_hours": st.column_config.NumberColumn("Mean repair (h)", format="%.1f"),
-                "lost_mwh": st.column_config.NumberColumn("Lost MWh", format="%,.0f"),
-                "opportunity_loss_rp": st.column_config.NumberColumn("Opportunity loss (Rp)", format="%,.0f"),
-                "events_per_year": st.column_config.NumberColumn("Events/yr", format="%.1f"),
-                "mtbf_hours": st.column_config.NumberColumn("MTBF (h)", format="%.0f"),
-                "mean_loss_per_event_rp": st.column_config.NumberColumn("Mean loss/event (Rp)", format="%,.0f"),
-                "expected_annual_loss_rp": st.column_config.NumberColumn("Expected annual loss (Rp)", format="%,.0f"),
-                "likelihood": st.column_config.NumberColumn("L (1-5)"),
-                "consequence": st.column_config.NumberColumn("C (1-5)"),
-                "risk_score": st.column_config.NumberColumn("Score"),
-                "risk_band": st.column_config.TextColumn("Band"),
-            })
-    st.caption("Likelihood and consequence levels are ranks among the groups shown (1 = lowest fifth, "
-               "5 = highest fifth), so they change with the filters.")
+    status = st.selectbox("Status", list(RANK_STATUS), format_func=lambda s: f"{s} - {RANK_STATUS[s]}")
+    chosen = scoped[scoped["unit_status"] == status]
+    if chosen.empty:
+        st.info(f"No {status} events for the selected units and years.", icon=":material/info:")
+    else:
+        rt = risk_table(chosen, data["business"], by=by)
+        with st.container(horizontal=True):
+            st.metric("Expected annual loss (Rp million)", rp_m(rt["expected_annual_loss_rp"].sum()), border=True)
+            st.metric("Expected annual loss (MWh)", f"{rt['expected_annual_loss_mwh'].sum():,.0f}", border=True)
+            st.metric("Events", f"{int(rt['events'].sum()):,}", border=True)
+        with st.container(border=True):
+            st.subheader("Pareto of loss output")
+            measure = st.segmented_control("Measure", ["Rp million", "MWh"], default="Rp million",
+                                           key="pareto_measure")
+            if measure == "MWh":
+                chart = pareto_chart(rt, by, "expected_annual_loss_mwh", "Expected annual loss (MWh)")
+            else:
+                chart = pareto_chart(rt.assign(loss_m=rt["expected_annual_loss_rp"] / 1e6), by, "loss_m",
+                                     "Expected annual loss (Rp million)")
+            st.altair_chart(chart, alt=f"Pareto chart of expected annual loss for {status} events, top 15 groups")
+        with st.container(border=True):
+            st.subheader("Risk table")
+            st.dataframe(rt.drop(columns=["period_hours", "service_hours"]), hide_index=True,
+                         alt=f"Risk table for {status} events", column_config=RANK_COLS)
+        st.caption("Likelihood and consequence levels are ranks among the groups shown (1 = lowest fifth, "
+                   "5 = highest fifth), so they change with the filters. The Ranking tab ignores the "
+                   "Event classes filter and always shows the selected status.")
 
 with tab_matrix:
     with st.container(border=True):

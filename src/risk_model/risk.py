@@ -45,6 +45,7 @@ def risk_table(priced, business, by=("unit", "system")):
     t["mtbf_hours"] = t["service_hours"] / t["events"]
     t["mean_loss_per_event_rp"] = t["opportunity_loss_rp"] / t["events"]
     t["expected_annual_loss_rp"] = t["events_per_year"] * t["mean_loss_per_event_rp"]
+    t["expected_annual_loss_mwh"] = t["events_per_year"] * t["lost_mwh"] / t["events"]
     t["likelihood"] = _level(t["events_per_year"])
     t["consequence"] = _level(t["mean_loss_per_event_rp"])
     t["risk_score"] = t["likelihood"] * t["consequence"]

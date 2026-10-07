@@ -15,11 +15,19 @@ files:
 # unit_status codes -> event class. Codes not listed are "unassigned" and
 # are reported but kept out of the risk totals until a decision is made.
 event_scope:
-  risk: [FO, FD, FD.MP, SF]
-  loss_event: [MO, PD, MD, FD.SYS]
+  # Loss events are candidates to be promoted to risk later: move a status between lists.
+  risk: [FD.MP, SF]
+  loss_event: [FO, MO, FD, MD, PD, FD.SYS]
   excluded: [NC, RS, PO, PE, SHD, SUD]
-  # failure_impact values that count as risk whatever the status code
+  # failure_impact values that count as risk when the status is not listed above
   risk_impacts: [Tripped]
+
+# statuses offered in the Ranking tab dropdown
+ranking_statuses:
+  FO: Forced outage
+  MO: Maintenance outage
+  FD: Forced derated
+  MD: Maintenance derated
 
 opportunity_loss:
   # bpp_rp_kwh or selling_price_rp_kwh, looked up for the month the loss occurred
