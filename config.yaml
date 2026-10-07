@@ -1,5 +1,6 @@
 paths:
   raw: data/raw
+  column_description: data/column_description
   processed: data/processed
 
 files:

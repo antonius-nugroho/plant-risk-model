@@ -7,7 +7,8 @@ from .data_loader import (ROOT, load_business, load_cause_codes, load_config, lo
 def load_all():
     cfg = load_config()
     raw, f = ROOT / cfg["paths"]["raw"], cfg["files"]
-    failures = load_failures(raw, f["failure"], load_cause_codes(raw, f["cause_codes"]))
+    ref = ROOT / cfg["paths"]["column_description"]
+    failures = load_failures(raw, f["failure"], load_cause_codes(ref, f["cause_codes"]))
     return {
         "cfg": cfg,
         "business": load_business(raw, f["business"]),
