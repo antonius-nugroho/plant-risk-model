@@ -102,16 +102,25 @@ RANK_COLS = {
 }
 
 
-def pareto_chart(table, by, value, axis_title):
-    """Bars sorted by loss, with the cumulative share of the total as a line."""
-    d = table.sort_values(value, ascending=False, ignore_index=True)
-    d["group"] = d[by].astype(str).agg(" / ".join, axis=1)
-    d["cumulative_share"] = d[value].cumsum() / d[value].sum()
-    d = d.head(15)
-    x = alt.X("group:N", sort=None, title=None, axis=alt.Axis(labelAngle=-40, labelLimit=220))
+def pareto_table(events):
+    """Loss output and event count per cause code ("Cause Code ID & Name - Component - System"),
+    largest first, with the running share of the total. Blank codes stay "Unclassified"."""
+    t = (events.assign(failure_mode=events["failure_cause_code"].fillna("Unclassified"))
+         .groupby("failure_mode").agg(loss_output_mwh=("lost_mwh", "sum"), frequency=("event_idx", "nunique"))
+         .sort_values("loss_output_mwh", ascending=False).reset_index())
+    t["cumulative_pct"] = t["loss_output_mwh"].cumsum() / t["loss_output_mwh"].sum() * 100
+    return t
+
+
+def pareto_chart(t, top=15):
+    """Bars of loss output per failure mode, with the cumulative share as a line."""
+    d = t.head(top).assign(cumulative_share=lambda x: x["cumulative_pct"] / 100)
+    x = alt.X("failure_mode:N", sort=None, title="Failure mode", axis=alt.Axis(labelAngle=-40, labelLimit=260))
     bars = alt.Chart(d).mark_bar().encode(
-        x=x, y=alt.Y(f"{value}:Q", title=axis_title),
-        tooltip=["group", alt.Tooltip(f"{value}:Q", format=",.0f"), alt.Tooltip("cumulative_share:Q", format=".0%")])
+        x=x, y=alt.Y("loss_output_mwh:Q", title="Loss output (MWh)"),
+        tooltip=["failure_mode", alt.Tooltip("loss_output_mwh:Q", title="Loss output (MWh)", format=",.0f"),
+                 alt.Tooltip("cumulative_share:Q", title="Cumulative", format=".0%"),
+                 alt.Tooltip("frequency:Q", title="Events")])
     line = alt.Chart(d).mark_line(point=True, color="orange").encode(
         x=x, y=alt.Y("cumulative_share:Q", title="Cumulative share", axis=alt.Axis(format="%"),
                      scale=alt.Scale(domain=[0, 1])))
@@ -129,16 +138,22 @@ with tab_rank:
             st.metric("Expected annual loss (Rp million)", rp_m(rt["expected_annual_loss_rp"].sum()), border=True)
             st.metric("Expected annual loss (MWh)", f"{rt['expected_annual_loss_mwh'].sum():,.0f}", border=True)
             st.metric("Events", f"{int(rt['events'].sum()):,}", border=True)
+        pt = pareto_table(chosen)
         with st.container(border=True):
             st.subheader("Pareto of loss output")
-            measure = st.segmented_control("Measure", ["Rp million", "MWh"], default="Rp million",
-                                           key="pareto_measure")
-            if measure == "MWh":
-                chart = pareto_chart(rt, by, "expected_annual_loss_mwh", "Expected annual loss (MWh)")
-            else:
-                chart = pareto_chart(rt.assign(loss_m=rt["expected_annual_loss_rp"] / 1e6), by, "loss_m",
-                                     "Expected annual loss (Rp million)")
-            st.altair_chart(chart, alt=f"Pareto chart of expected annual loss for {status} events, top 15 groups")
+            st.altair_chart(pareto_chart(pt),
+                            alt=f"Pareto chart of loss output in MWh by failure mode for {status} events, top 15")
+        with st.container(border=True):
+            st.subheader("Pareto loss output")
+            st.dataframe(
+                pt[["failure_mode", "loss_output_mwh", "cumulative_pct", "frequency"]], hide_index=True,
+                alt=f"Loss output, cumulative share and frequency by failure mode for {status} events",
+                column_config={
+                    "failure_mode": st.column_config.TextColumn("Failure Mode", width="large"),
+                    "loss_output_mwh": st.column_config.NumberColumn("Loss Output (MWh)", format="%,.1f"),
+                    "cumulative_pct": st.column_config.NumberColumn("Cumulative (%)", format="%.1f"),
+                    "frequency": st.column_config.NumberColumn("Frequency (Event)"),
+                })
         with st.container(border=True):
             st.subheader("Risk table")
             st.dataframe(rt.drop(columns=["period_hours", "service_hours"]), hide_index=True,
