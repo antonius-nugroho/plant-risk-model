@@ -36,13 +36,13 @@ def rp_m(x):
 sig = data_signature()
 data = get_data(sig)
 units = sorted(data["failures"]["unit"].unique())
-years = sorted(data["failures"]["timestamp_start"].dt.year.unique())
+years = [int(y) for y in sorted(data["failures"]["timestamp_start"].dt.year.unique())]
 
 # Sidebar: every input that changes the numbers lives here.
 with st.sidebar:
     st.header("Settings")
-    sel_units = st.pills("Units", units, selection_mode="multi", default=units)
-    sel_years = st.pills("Years", years, selection_mode="multi", default=years)
+    sel_units = st.multiselect("Units", units, default=units)
+    sel_years = st.multiselect("Years", years, default=years)
     classes = st.pills("Event classes", list(CLASS_LABEL.values()), selection_mode="multi", default=["Risk", "Loss event"],
                        help="Risk: FD.MP, SF and trips with other statuses. Loss event: FO, MO, FD, MD, PD, FD.SYS "
                             "(candidates to become risk). Excluded: NC, RS, PO, PE, SHD, SUD.")
@@ -78,6 +78,8 @@ by = ["unit", "system"] + (["component"] if group == "Component" else [])
 table = risk_table(priced, data["business"], by=by)
 events = priced.drop_duplicates("event_idx")
 
+st.caption(f"{', '.join(sel_units)}  |  {', '.join(str(y) for y in sorted(sel_years))}  |  "
+           f"Event classes: {', '.join(classes)}")
 with st.container(horizontal=True):
     st.metric("Events", f"{len(events):,}", border=True)
     st.metric("Lost energy (MWh)", f"{priced['lost_mwh'].sum():,.0f}", border=True)
@@ -218,11 +220,10 @@ with tab_matrix:
                      .style.background_gradient(cmap="Reds", vmin=0), alt="Likelihood by consequence matrix")
     st.caption("Count of groups per cell. Likelihood: events per year. Consequence: mean loss per event.")
 
-with tab_trend:
-    trend_years = [int(y) for y in years]  # years with recorded events (an event can spill a sliver into the next year)
-    trend_year = st.selectbox("Year", trend_years, index=len(trend_years) - 1, key="trend_year")
+def monthly_loss_chart(year):
+    """Grouped bars (one per selected unit) for Jan-Dec of one year, with the monthly sum as a line."""
     mon = priced_all[priced_all["unit"].isin(sel_units) & priced_all["event_class"].isin([inv[c] for c in classes])
-                     & (priced_all["month"].dt.year == trend_year)]
+                     & (priced_all["month"].dt.year == year)]
     grid = pd.MultiIndex.from_product([sorted(sel_units), range(1, 13)], names=["unit", "m"])
     by_unit = (mon.assign(m=mon["month"].dt.month).groupby(["unit", "m"])["opportunity_loss_rp"].sum()
                .reindex(grid, fill_value=0).div(1e6).rename("loss_m").reset_index())
@@ -236,12 +237,17 @@ with tab_trend:
     line = alt.Chart(total).mark_line(point=True, color="orange").encode(
         x=x, y="loss_m:Q",
         tooltip=["month_name", alt.Tooltip("loss_m:Q", title="Total of units (Rp million)", format=",.0f")])
-    with st.container(border=True):
-        st.subheader(f"Opportunity loss by month, {trend_year} (Rp million)")
-        st.altair_chart(alt.layer(bars, line),
-                        alt=f"Grouped bars of opportunity loss per unit by month in {trend_year}, with the monthly total as a line")
-        st.caption("Bars: each unit's loss. Orange line: sum of the units for the month. "
-                   "Follows the sidebar Units, Event classes and price settings; the year is chosen here.")
+    return alt.layer(bars, line)
+
+
+with tab_trend:
+    for year in sorted(sel_years):
+        with st.container(border=True):
+            st.subheader(f"Opportunity loss by month, {year} (Rp million)")
+            st.altair_chart(monthly_loss_chart(year),
+                            alt=f"Grouped bars of opportunity loss per unit by month in {year}, with the monthly total as a line")
+    st.caption("Bars: each unit's loss. Orange line: sum of the units for the month. "
+               "Follows the sidebar Units, Years, Event classes and price settings.")
 
 with tab_events:
     show = events[["timestamp_start", "unit", "unit_status", "event_class", "failure_impact", "system",
@@ -268,20 +274,15 @@ with tab_quality:
                  column_config={"expenses_rp": st.column_config.NumberColumn("Expenses (Rp)", format="%,.0f")})
 
 with tab_kpi:
-    kpi_years = sorted(data["business"]["month"].dt.year.unique())
-    kpi_sel = st.multiselect("Years", kpi_years, default=kpi_years[-1:], key="kpi_years")
-    st.caption("Totals and rates cover the units selected in the sidebar.")
-    if not kpi_sel:
-        st.info("Select at least one year.", icon=":material/info:")
-    else:
-        kp = monthly_kpis(data["business"], sel_units, data["coal"])
-        kp = kp[kp["month"].dt.year.isin(kpi_sel)]
-        for i in range(0, len(KPI_SPECS), 2):
-            for col, (key, title, unit_label, zero) in zip(st.columns(2), KPI_SPECS[i:i + 2]):
-                with col.container(border=True):
-                    st.subheader(f"{title} ({unit_label})")
-                    if kp[key].notna().any():
-                        st.altair_chart(kpi_chart(kp, key, unit_label, zero), alt=f"{title} by month")
-                    else:
-                        st.info("No data available for this KPI.", icon=":material/info:")
-                    st.caption(KPI_NOTES[key])
+    st.caption("Totals and rates cover the units and years selected in the sidebar.")
+    kp = monthly_kpis(data["business"], sel_units, data["coal"])
+    kp = kp[kp["month"].dt.year.isin(sel_years)]
+    for i in range(0, len(KPI_SPECS), 2):
+        for col, (key, title, unit_label, zero) in zip(st.columns(2), KPI_SPECS[i:i + 2]):
+            with col.container(border=True):
+                st.subheader(f"{title} ({unit_label})")
+                if kp[key].notna().any():
+                    st.altair_chart(kpi_chart(kp, key, unit_label, zero), alt=f"{title} by month")
+                else:
+                    st.info("No data available for this KPI.", icon=":material/info:")
+                st.caption(KPI_NOTES[key])
