@@ -1,6 +1,7 @@
 import textwrap
 
 import altair as alt
+import pandas as pd
 import streamlit as st
 
 from src.risk_model.data_loader import data_signature
@@ -61,9 +62,9 @@ if not sel_units or not sel_years or not classes:
     st.info("Select at least one unit, year and event class.", icon=":material/info:")
     st.stop()
 
-priced = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
+priced_all = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
 inv = {v: k for k, v in CLASS_LABEL.items()}
-scoped = priced[priced["unit"].isin(sel_units) & priced["month"].dt.year.isin(sel_years)]
+scoped = priced_all[priced_all["unit"].isin(sel_units) & priced_all["month"].dt.year.isin(sel_years)]
 priced = scoped[scoped["event_class"].isin([inv[c] for c in classes])]
 gaps = missing_prices(scoped) if price_mode != "Manual" else []
 for unit, months in (gaps.items() if len(gaps) else []):
@@ -218,10 +219,29 @@ with tab_matrix:
     st.caption("Count of groups per cell. Likelihood: events per year. Consequence: mean loss per event.")
 
 with tab_trend:
-    monthly = priced.pivot_table(index="month", columns="unit", values="opportunity_loss_rp", aggfunc="sum") / 1e6
+    trend_years = [int(y) for y in years]  # years with recorded events (an event can spill a sliver into the next year)
+    trend_year = st.selectbox("Year", trend_years, index=len(trend_years) - 1, key="trend_year")
+    mon = priced_all[priced_all["unit"].isin(sel_units) & priced_all["event_class"].isin([inv[c] for c in classes])
+                     & (priced_all["month"].dt.year == trend_year)]
+    grid = pd.MultiIndex.from_product([sorted(sel_units), range(1, 13)], names=["unit", "m"])
+    by_unit = (mon.assign(m=mon["month"].dt.month).groupby(["unit", "m"])["opportunity_loss_rp"].sum()
+               .reindex(grid, fill_value=0).div(1e6).rename("loss_m").reset_index())
+    by_unit["month_name"] = by_unit["m"].map(lambda m: MONTH_NAMES[m - 1])
+    total = by_unit.groupby(["m", "month_name"], as_index=False)["loss_m"].sum()
+    x = alt.X("month_name:N", sort=MONTH_NAMES, title="Month", axis=alt.Axis(labelAngle=0))
+    bars = alt.Chart(by_unit).mark_bar().encode(
+        x=x, xOffset=alt.XOffset("unit:N"), y=alt.Y("loss_m:Q", title="Opportunity loss (Rp million)"),
+        color=alt.Color("unit:N", title="Unit"),
+        tooltip=["unit", "month_name", alt.Tooltip("loss_m:Q", title="Rp million", format=",.0f")])
+    line = alt.Chart(total).mark_line(point=True, color="orange").encode(
+        x=x, y="loss_m:Q",
+        tooltip=["month_name", alt.Tooltip("loss_m:Q", title="Total of units (Rp million)", format=",.0f")])
     with st.container(border=True):
-        st.subheader("Opportunity loss by month (Rp million)")
-        st.bar_chart(monthly, alt="Opportunity loss per month by unit")
+        st.subheader(f"Opportunity loss by month, {trend_year} (Rp million)")
+        st.altair_chart(alt.layer(bars, line),
+                        alt=f"Grouped bars of opportunity loss per unit by month in {trend_year}, with the monthly total as a line")
+        st.caption("Bars: each unit's loss. Orange line: sum of the units for the month. "
+                   "Follows the sidebar Units, Event classes and price settings; the year is chosen here.")
 
 with tab_events:
     show = events[["timestamp_start", "unit", "unit_status", "event_class", "failure_impact", "system",
