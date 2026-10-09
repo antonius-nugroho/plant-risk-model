@@ -1,3 +1,4 @@
+import io
 import textwrap
 
 import altair as alt
@@ -155,6 +156,41 @@ def expected_loss_chart(df, value, title, selected):
         tooltip=["unit_status", alt.Tooltip(f"{value}:Q", title=title, format=",.0f")])
 
 
+def download_buttons(df, name):
+    """CSV and XLSX download buttons for a table. Files are built when clicked and named after the years selected."""
+    stem = f"{name}_{'-'.join(str(y) for y in sorted(sel_years))}"
+
+    def to_xlsx():
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name=name[:31])
+        return buf.getvalue()
+
+    with st.container(horizontal=True):
+        st.download_button("CSV", data=lambda: df.to_csv(index=False).encode("utf-8-sig"), file_name=f"{stem}.csv",
+                           mime="text/csv", icon=":material/download:", on_click="ignore", key=f"dl_csv_{stem}")
+        st.download_button("XLSX", data=to_xlsx, file_name=f"{stem}.xlsx", icon=":material/download:", on_click="ignore",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key=f"dl_xlsx_{stem}")
+
+
+RISK_LABELS = {
+    "unit": "Unit", "system": "System", "component": "Component", "events": "Events",
+    "downtime_hours": "Downtime (h)", "mean_repair_hours": "Mean repair (h)", "lost_mwh": "Lost MWh",
+    "opportunity_loss_rp": "Opportunity loss (Rp)", "events_per_year": "Events/yr", "mtbf_hours": "MTBF (h)",
+    "mean_loss_per_event_rp": "Mean loss/event (Rp)", "expected_annual_loss_rp": "Expected annual loss (Rp)",
+    "expected_annual_loss_mwh": "Expected annual loss (MWh)", "likelihood": "L (1-5)", "consequence": "C (1-5)",
+    "risk_score": "Score", "risk_band": "Band"}
+PARETO_LABELS = {"failure_mode": "Failure Mode", "loss_output_mwh": "Loss Output (MWh)",
+                 "cumulative_pct": "Cumulative (%)", "frequency": "Frequency (Event)"}
+EVENT_LABELS = {
+    "timestamp_start": "Start", "unit": "Unit", "unit_status": "Status", "event_class": "Class",
+    "failure_impact": "Impact", "system": "System", "component": "Component",
+    "root_cause_failure_analysis": "Root cause", "failure_duration_hours": "Hours", "loss_output_mwh": "Lost MWh"}
+MAINT_LABELS = {"month": "Month", "maintenance_type": "Maintenance type", "expenses_rp": "Expenses (Rp)",
+                "is_negative": "Negative entry"}
+
+
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
@@ -205,10 +241,13 @@ with tab_rank:
                     "cumulative_pct": st.column_config.NumberColumn("Cumulative (%)", format="%.1f"),
                     "frequency": st.column_config.NumberColumn("Frequency (Event)"),
                 })
+            download_buttons(pt[list(PARETO_LABELS)].rename(columns=PARETO_LABELS), f"pareto_loss_output_{status}")
         with st.container(border=True):
             st.subheader("Risk table")
             st.dataframe(rt.drop(columns=["period_hours", "service_hours"]), hide_index=True,
                          alt=f"Risk table for {status} events", column_config=RANK_COLS)
+            download_buttons(rt.drop(columns=["period_hours", "service_hours"]).rename(columns=RISK_LABELS),
+                             f"risk_table_{status}")
         st.caption("Likelihood and consequence levels are ranks among the groups shown (1 = lowest fifth, "
                    "5 = highest fifth), so they change with the filters. The Ranking tab ignores the "
                    "Event classes filter and always shows the selected status.")
@@ -218,6 +257,8 @@ with tab_matrix:
         st.subheader("Groups by likelihood and consequence")
         st.dataframe(risk_matrix(table).rename_axis(index="Likelihood", columns="Consequence")
                      .style.background_gradient(cmap="Reds", vmin=0), alt="Likelihood by consequence matrix")
+        download_buttons(risk_matrix(table).rename_axis(index="Likelihood", columns="Consequence").reset_index()
+                         .rename(columns=lambda c: f"Consequence {c}" if isinstance(c, int) else c), "risk_matrix")
     st.caption("Count of groups per cell. Likelihood: events per year. Consequence: mean loss per event.")
 
 def monthly_loss_chart(year):
@@ -255,6 +296,7 @@ with tab_events:
     st.dataframe(show, hide_index=True, alt="Failure events",
                  column_config={"failure_duration_hours": st.column_config.NumberColumn("Hours", format="%.1f"),
                                 "loss_output_mwh": st.column_config.NumberColumn("Lost MWh", format="%,.1f")})
+    download_buttons(show.rename(columns=EVENT_LABELS), "failure_events")
 
 with tab_quality:
     all_events = data["failures"]
@@ -270,8 +312,10 @@ with tab_quality:
         "- Events that cross a month boundary are split by hours, each part priced at its own month.\n"
         "- Maintenance cost covers Jan to Aug 2023 for the whole plant (no unit), so it is not allocated to events.")
     st.subheader("Maintenance cost")
-    st.dataframe(data["maintenance"], hide_index=True, alt="Maintenance cost by month and type",
+    maint = data["maintenance"][data["maintenance"]["month"].dt.year.isin(sel_years)]
+    st.dataframe(maint, hide_index=True, alt="Maintenance cost by month and type",
                  column_config={"expenses_rp": st.column_config.NumberColumn("Expenses (Rp)", format="%,.0f")})
+    download_buttons(maint.rename(columns=MAINT_LABELS), "maintenance_cost")
 
 with tab_kpi:
     st.caption("Totals and rates cover the units and years selected in the sidebar.")
