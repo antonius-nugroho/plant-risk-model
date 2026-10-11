@@ -30,6 +30,19 @@ ranking_statuses:
   FD: Forced derated
   MD: Maintenance derated
 
+# Consequence (impact scale) is measured against a yearly risk limit:
+#   risk limit = k x revenue of the previous year (the first year in the data uses its own revenue)
+# Each event's loss is compared with the risk limit of the year it started, and the share is mapped to
+# a level: Very Low (<= 20%), Low (<= 40%), Moderate (<= 60%), High (<= 80%), Very High (above 80%).
+risk_limit:
+  k: 0.02   # change according to the company's policy
+impact_scale:   # upper bound of each level, as a share of the risk limit
+  - {name: Very Low, upper: 0.2}
+  - {name: Low, upper: 0.4}
+  - {name: Moderate, upper: 0.6}
+  - {name: High, upper: 0.8}
+  - {name: Very High, upper: 1.0}
+
 opportunity_loss:
   # bpp_rp_kwh or selling_price_rp_kwh, looked up for the month the loss occurred
   price_basis: bpp_rp_kwh

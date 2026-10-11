@@ -4,7 +4,7 @@ import argparse
 from src.risk_model.data_loader import ROOT
 from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
-from src.risk_model.risk import risk_table
+from src.risk_model.risk import revenue_by_year, risk_limits, risk_table
 
 
 def main():
@@ -19,7 +19,10 @@ def main():
     ol = cfg["opportunity_loss"]
     manual = args.price if args.price is not None else ol["manual_price_rp_per_kwh"]
     seg = opportunity_loss(failures, d["pricing"], args.basis or ol["price_basis"], manual)
-    risk = risk_table(seg[seg.event_class == "risk"], d["business"], by=("unit", "system", "component"))
+    limit_df = risk_limits(revenue_by_year(d["business"], d["pricing"]), cfg["risk_limit"]["k"])
+    scale = [(i["name"], i["upper"]) for i in cfg["impact_scale"]]
+    risk = risk_table(seg[seg.event_class == "risk"], d["business"], by=("unit", "system", "component"),
+                      limits=dict(zip(limit_df["year"], limit_df["risk_limit_rp"])), scale=scale)
 
     out.mkdir(parents=True, exist_ok=True)
     for name, df in [("business", d["business"]), ("pricing", d["pricing"]), ("maintenance", d["maintenance"]),

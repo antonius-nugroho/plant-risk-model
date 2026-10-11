@@ -2,7 +2,7 @@ services:
   risk-model:
     build: .
     ports:
-      - "8501:8501"
+      - "${APP_PORT:-8501}:8501"
     volumes:
       - ./data:/app/data:ro
       - ./config.yaml:/app/config.yaml:ro

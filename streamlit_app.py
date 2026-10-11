@@ -9,7 +9,7 @@ from src.risk_model.data_loader import data_signature
 from src.risk_model.kpis import KPI_NOTES, KPI_SPECS, monthly_kpis
 from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
-from src.risk_model.risk import risk_matrix, risk_table
+from src.risk_model.risk import revenue_by_year, risk_limits, risk_matrix, risk_table
 
 st.set_page_config(page_title="Plant risk model", page_icon=":material/bolt:", layout="wide")
 
@@ -57,12 +57,19 @@ with st.sidebar:
     else:
         st.caption("Priced at the month the energy was lost, per unit.")
     group = st.segmented_control("Rank by", ["System", "Component"], default="System")
+    k_pct = st.number_input("Risk limit k (% of last year's revenue)", min_value=0.1, max_value=100.0,
+                            value=float(data["cfg"]["risk_limit"]["k"]) * 100, step=0.5,
+                            help="Impact scale: a loss is Very Low up to 20% of the risk limit, Low to 40%, "
+                                 "Moderate to 60%, High to 80%, Very High above. Risk limit = k x revenue of the previous year.")
 
 st.title("Plant operational risk model")
 if not sel_units or not sel_years or not classes:
     st.info("Select at least one unit, year and event class.", icon=":material/info:")
     st.stop()
 
+limit_df = risk_limits(revenue_by_year(data["business"], data["pricing"]), k_pct / 100)
+LIMITS = dict(zip(limit_df["year"], limit_df["risk_limit_rp"]))
+SCALE = [(i["name"], i["upper"]) for i in data["cfg"]["impact_scale"]]
 priced_all = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
 inv = {v: k for k, v in CLASS_LABEL.items()}
 scoped = priced_all[priced_all["unit"].isin(sel_units) & priced_all["month"].dt.year.isin(sel_years)]
@@ -76,7 +83,7 @@ if priced.empty:
     st.stop()
 
 by = ["unit", "system"] + (["component"] if group == "Component" else [])
-table = risk_table(priced, data["business"], by=by)
+table = risk_table(priced, data["business"], by=by, limits=LIMITS, scale=SCALE)
 events = priced.drop_duplicates("event_idx")
 
 st.caption(f"{', '.join(sel_units)}  |  {', '.join(str(y) for y in sorted(sel_years))}  |  "
@@ -102,6 +109,8 @@ RANK_COLS = {
     "mean_loss_per_event_rp": st.column_config.NumberColumn("Mean loss/event (Rp)", format="%,.0f"),
     "expected_annual_loss_rp": st.column_config.NumberColumn("Expected annual loss (Rp)", format="%,.0f"),
     "expected_annual_loss_mwh": st.column_config.NumberColumn("Expected annual loss (MWh)", format="%,.0f"),
+    "impact_pct": st.column_config.NumberColumn("Impact (% of risk limit)", format="%.1f"),
+    "impact_scale": st.column_config.TextColumn("Impact scale"),
     "likelihood": st.column_config.NumberColumn("L (1-5)"),
     "consequence": st.column_config.NumberColumn("C (1-5)"),
     "risk_score": st.column_config.NumberColumn("Score"),
@@ -179,7 +188,8 @@ RISK_LABELS = {
     "downtime_hours": "Downtime (h)", "mean_repair_hours": "Mean repair (h)", "lost_mwh": "Lost MWh",
     "opportunity_loss_rp": "Opportunity loss (Rp)", "events_per_year": "Events/yr", "mtbf_hours": "MTBF (h)",
     "mean_loss_per_event_rp": "Mean loss/event (Rp)", "expected_annual_loss_rp": "Expected annual loss (Rp)",
-    "expected_annual_loss_mwh": "Expected annual loss (MWh)", "likelihood": "L (1-5)", "consequence": "C (1-5)",
+    "expected_annual_loss_mwh": "Expected annual loss (MWh)", "impact_pct": "Impact (% of risk limit)",
+    "impact_scale": "Impact scale", "likelihood": "L (1-5)", "consequence": "C (1-5)",
     "risk_score": "Score", "risk_band": "Band"}
 PARETO_LABELS = {"failure_mode": "Failure Mode", "loss_output_mwh": "Loss Output (MWh)",
                  "cumulative_pct": "Cumulative (%)", "frequency": "Frequency (Event)"}
@@ -209,7 +219,7 @@ with tab_rank:
     if chosen.empty:
         st.info(f"No {status} events for the selected units and years.", icon=":material/info:")
     else:
-        rt = risk_table(chosen, data["business"], by=by)
+        rt = risk_table(chosen, data["business"], by=by, limits=LIMITS, scale=SCALE)
         with st.container(horizontal=True):
             st.metric("Expected annual loss (Rp million)", rp_m(rt["expected_annual_loss_rp"].sum()), border=True)
             st.metric("Expected annual loss (MWh)", f"{rt['expected_annual_loss_mwh'].sum():,.0f}", border=True)
@@ -248,9 +258,10 @@ with tab_rank:
                          alt=f"Risk table for {status} events", column_config=RANK_COLS)
             download_buttons(rt.drop(columns=["period_hours", "service_hours"]).rename(columns=RISK_LABELS),
                              f"risk_table_{status}")
-        st.caption("Likelihood and consequence levels are ranks among the groups shown (1 = lowest fifth, "
-                   "5 = highest fifth), so they change with the filters. The Ranking tab ignores the "
-                   "Event classes filter and always shows the selected status.")
+        st.caption("Consequence (C) is the impact scale: mean loss per event as a share of the yearly risk limit "
+                   "(Risk matrix tab). Likelihood (L) is still a rank among the groups shown (1 = lowest fifth, "
+                   "5 = highest fifth). The Ranking tab ignores the Event classes filter and always shows the "
+                   "selected status.")
 
 with tab_matrix:
     with st.container(border=True):
@@ -259,7 +270,24 @@ with tab_matrix:
                      .style.background_gradient(cmap="Reds", vmin=0), alt="Likelihood by consequence matrix")
         download_buttons(risk_matrix(table).rename_axis(index="Likelihood", columns="Consequence").reset_index()
                          .rename(columns=lambda c: f"Consequence {c}" if isinstance(c, int) else c), "risk_matrix")
-    st.caption("Count of groups per cell. Likelihood: events per year. Consequence: mean loss per event.")
+    st.caption("Count of groups per cell. Likelihood: events per year, ranked among the groups. "
+               "Consequence: impact scale, mean loss per event against the yearly risk limit below.")
+    shown = limit_df[limit_df["year"].isin(sel_years)]
+    cut = pd.DataFrame({"Year": shown["year"], "Revenue of year": shown["revenue_year"],
+                        "Revenue (Rp)": shown["revenue_rp"], "Risk limit (Rp)": shown["risk_limit_rp"]})
+    for name, upper in SCALE[:-1]:
+        cut[f"{name} up to (Rp)"] = shown["risk_limit_rp"] * upper
+    with st.container(border=True):
+        st.subheader("Impact scale limits")
+        st.dataframe(cut, hide_index=True, alt="Risk limit and impact scale boundaries per year",
+                     column_config={c: st.column_config.NumberColumn(c, format="%,.0f")
+                                    for c in cut.columns if c.endswith("(Rp)")} |
+                                    {"Year": st.column_config.NumberColumn("Year", format="%d"),
+                                     "Revenue of year": st.column_config.NumberColumn("Revenue of year", format="%d")})
+        download_buttons(cut, "impact_scale_limits")
+        st.caption(f"Risk limit = {k_pct:g}% x revenue of the previous year (revenue = net energy sold x selling price, "
+                   "all units). A year with no earlier data uses its own revenue. Above the Very High bound "
+                   "(100% of the limit) stays Very High.")
 
 def monthly_loss_chart(year):
     """Grouped bars (one per selected unit) for Jan-Dec of one year, with the monthly sum as a line."""
