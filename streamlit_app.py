@@ -9,7 +9,7 @@ from src.risk_model.data_loader import data_signature
 from src.risk_model.kpis import KPI_NOTES, KPI_SPECS, monthly_kpis
 from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
-from src.risk_model.risk import revenue_by_year, risk_limits, risk_matrix, risk_table
+from src.risk_model.risk import likelihood_window, revenue_by_year, risk_limits, risk_matrix, risk_table
 
 st.set_page_config(page_title="Plant risk model", page_icon=":material/bolt:", layout="wide")
 
@@ -70,6 +70,7 @@ if not sel_units or not sel_years or not classes:
 limit_df = risk_limits(revenue_by_year(data["business"], data["pricing"]), k_pct / 100)
 LIMITS = dict(zip(limit_df["year"], limit_df["risk_limit_rp"]))
 SCALE = [(i["name"], i["upper"]) for i in data["cfg"]["impact_scale"]]
+LIK_SCALE = [(i["name"], i["upper"]) for i in data["cfg"]["likelihood_scale"]]
 priced_all = get_priced(sig, PRICE_BASIS.get(price_mode, "bpp_rp_kwh"), manual)
 inv = {v: k for k, v in CLASS_LABEL.items()}
 scoped = priced_all[priced_all["unit"].isin(sel_units) & priced_all["month"].dt.year.isin(sel_years)]
@@ -83,7 +84,9 @@ if priced.empty:
     st.stop()
 
 by = ["unit", "system"] + (["component"] if group == "Component" else [])
-table = risk_table(priced, data["business"], by=by, limits=LIMITS, scale=SCALE)
+WIN_YEARS = likelihood_window(sel_years, data["cfg"]["max_window_years"])
+RISK_KW = dict(limits=LIMITS, scale=SCALE, likelihood_scale=LIK_SCALE, window_months=12 * len(WIN_YEARS))
+table = risk_table(priced[priced["month"].dt.year.isin(WIN_YEARS)], data["business"], by=by, **RISK_KW)
 events = priced.drop_duplicates("event_idx")
 
 st.caption(f"{', '.join(sel_units)}  |  {', '.join(str(y) for y in sorted(sel_years))}  |  "
@@ -111,6 +114,9 @@ RANK_COLS = {
     "expected_annual_loss_mwh": st.column_config.NumberColumn("Expected annual loss (MWh)", format="%,.0f"),
     "impact_pct": st.column_config.NumberColumn("Impact (% of risk limit)", format="%.1f"),
     "impact_scale": st.column_config.TextColumn("Impact scale"),
+    "event_months": st.column_config.NumberColumn("Months with event"),
+    "likelihood_pct": st.column_config.NumberColumn("Probability (% of months)", format="%.1f"),
+    "likelihood_scale": st.column_config.TextColumn("Likelihood scale"),
     "likelihood": st.column_config.NumberColumn("L (1-5)"),
     "consequence": st.column_config.NumberColumn("C (1-5)"),
     "risk_score": st.column_config.NumberColumn("Score"),
@@ -189,7 +195,9 @@ RISK_LABELS = {
     "opportunity_loss_rp": "Opportunity loss (Rp)", "events_per_year": "Events/yr", "mtbf_hours": "MTBF (h)",
     "mean_loss_per_event_rp": "Mean loss/event (Rp)", "expected_annual_loss_rp": "Expected annual loss (Rp)",
     "expected_annual_loss_mwh": "Expected annual loss (MWh)", "impact_pct": "Impact (% of risk limit)",
-    "impact_scale": "Impact scale", "likelihood": "L (1-5)", "consequence": "C (1-5)",
+    "impact_scale": "Impact scale", "event_months": "Months with event",
+    "likelihood_pct": "Probability (% of months)", "likelihood_scale": "Likelihood scale",
+    "likelihood": "L (1-5)", "consequence": "C (1-5)",
     "risk_score": "Score", "risk_band": "Band"}
 PARETO_LABELS = {"failure_mode": "Failure Mode", "loss_output_mwh": "Loss Output (MWh)",
                  "cumulative_pct": "Cumulative (%)", "frequency": "Frequency (Event)"}
@@ -219,7 +227,7 @@ with tab_rank:
     if chosen.empty:
         st.info(f"No {status} events for the selected units and years.", icon=":material/info:")
     else:
-        rt = risk_table(chosen, data["business"], by=by, limits=LIMITS, scale=SCALE)
+        rt = risk_table(chosen[chosen["month"].dt.year.isin(WIN_YEARS)], data["business"], by=by, **RISK_KW)
         with st.container(horizontal=True):
             st.metric("Expected annual loss (Rp million)", rp_m(rt["expected_annual_loss_rp"].sum()), border=True)
             st.metric("Expected annual loss (MWh)", f"{rt['expected_annual_loss_mwh'].sum():,.0f}", border=True)
@@ -258,10 +266,10 @@ with tab_rank:
                          alt=f"Risk table for {status} events", column_config=RANK_COLS)
             download_buttons(rt.drop(columns=["period_hours", "service_hours"]).rename(columns=RISK_LABELS),
                              f"risk_table_{status}")
-        st.caption("Consequence (C) is the impact scale: mean loss per event as a share of the yearly risk limit "
-                   "(Risk matrix tab). Likelihood (L) is still a rank among the groups shown (1 = lowest fifth, "
-                   "5 = highest fifth). The Ranking tab ignores the Event classes filter and always shows the "
-                   "selected status.")
+        st.caption("Likelihood (L) is the share of months in the selected years with at least one event "
+                   "(latest five years if more are selected). Consequence (C) is the impact scale: mean loss per "
+                   "event against the yearly risk limit. Criteria are on the Risk matrix tab. The Ranking tab "
+                   "ignores the Event classes filter and always shows the selected status.")
 
 with tab_matrix:
     with st.container(border=True):
@@ -270,8 +278,21 @@ with tab_matrix:
                      .style.background_gradient(cmap="Reds", vmin=0), alt="Likelihood by consequence matrix")
         download_buttons(risk_matrix(table).rename_axis(index="Likelihood", columns="Consequence").reset_index()
                          .rename(columns=lambda c: f"Consequence {c}" if isinstance(c, int) else c), "risk_matrix")
-    st.caption("Count of groups per cell. Likelihood: events per year, ranked among the groups. "
+    st.caption("Count of groups per cell. Likelihood: share of months with an event in the window. "
                "Consequence: impact scale, mean loss per event against the yearly risk limit below.")
+    lik_rows, lower = [], 0.0
+    for lvl, (name, upper) in enumerate(LIK_SCALE, start=1):
+        lik_rows.append({"Level": lvl, "Likelihood": name, "From (% of months, above)": lower * 100,
+                         "Up to (% of months)": upper * 100,
+                         "Months with an event": f"over {lower * 12 * len(WIN_YEARS):.1f} up to "
+                                                 f"{upper * 12 * len(WIN_YEARS):.1f} of {12 * len(WIN_YEARS)}"})
+        lower = upper
+    with st.container(border=True):
+        st.subheader("Likelihood criteria")
+        st.dataframe(pd.DataFrame(lik_rows), hide_index=True, alt="Likelihood scale boundaries")
+        st.caption("Window: " + ", ".join(str(y) for y in WIN_YEARS) + f" ({12 * len(WIN_YEARS)} months). "
+                   "A month counts when the group had at least one event starting in it. "
+                   "With more than five years selected, the latest five are used.")
     shown = limit_df[limit_df["year"].isin(sel_years)]
     cut = pd.DataFrame({"Year": shown["year"], "Revenue of year": shown["revenue_year"],
                         "Revenue (Rp)": shown["revenue_rp"], "Risk limit (Rp)": shown["risk_limit_rp"]})

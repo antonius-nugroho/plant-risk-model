@@ -4,7 +4,7 @@ import argparse
 from src.risk_model.data_loader import ROOT
 from src.risk_model.opportunity import missing_prices, opportunity_loss
 from src.risk_model.pipeline import load_all
-from src.risk_model.risk import revenue_by_year, risk_limits, risk_table
+from src.risk_model.risk import likelihood_window, revenue_by_year, risk_limits, risk_table
 
 
 def main():
@@ -22,7 +22,9 @@ def main():
     limit_df = risk_limits(revenue_by_year(d["business"], d["pricing"]), cfg["risk_limit"]["k"])
     scale = [(i["name"], i["upper"]) for i in cfg["impact_scale"]]
     risk = risk_table(seg[seg.event_class == "risk"], d["business"], by=("unit", "system", "component"),
-                      limits=dict(zip(limit_df["year"], limit_df["risk_limit_rp"])), scale=scale)
+                      limits=dict(zip(limit_df["year"], limit_df["risk_limit_rp"])), scale=scale,
+                      likelihood_scale=[(i["name"], i["upper"]) for i in cfg["likelihood_scale"]],
+                      window_months=12 * len(likelihood_window(seg["month"].dt.year.unique(), cfg["max_window_years"])))
 
     out.mkdir(parents=True, exist_ok=True)
     for name, df in [("business", d["business"]), ("pricing", d["pricing"]), ("maintenance", d["maintenance"]),

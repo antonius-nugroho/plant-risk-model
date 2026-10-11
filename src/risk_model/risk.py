@@ -30,8 +30,14 @@ def risk_limits(revenue, k):
     return pd.DataFrame(rows)
 
 
-def impact_level(ratio, scale):
-    """1-5 impact level of loss / risk limit. `scale` is [(name, upper_share), ...]; above the last bound = top level."""
+def likelihood_window(years, max_years=5):
+    """Years the likelihood is measured over: the selected years, or the latest `max_years` of them."""
+    return sorted(int(y) for y in years)[-max_years:]
+
+
+def scale_level(ratio, scale):
+    """1-5 level of a share (loss / risk limit, or months with an event / window months).
+    `scale` is [(name, upper_share), ...]; above the last bound = top level."""
     uppers = [u for _, u in scale[:-1]]
     ratio = pd.Series(ratio, dtype="float64")
     level = pd.Series(1 + sum((ratio > u).astype(int) for u in uppers), index=ratio.index, dtype="float64")
@@ -48,7 +54,8 @@ def _band(score):
     return next(name for limit, name in BANDS if score <= limit)
 
 
-def risk_table(priced, business, by=("unit", "system"), limits=None, scale=None):
+def risk_table(priced, business, by=("unit", "system"), limits=None, scale=None,
+               likelihood_scale=None, window_months=None):
     """One row per group: how often it fails (likelihood) and what each failure costs (consequence).
 
     `priced` is the output of opportunity_loss(): one row per event-month.
@@ -57,17 +64,22 @@ def risk_table(priced, business, by=("unit", "system"), limits=None, scale=None)
 
     Consequence level: with `limits` ({year: risk limit in Rp}) and `scale` the mean share of the
     risk limit lost per event is mapped onto the impact scale; otherwise it is a rank among the groups.
+
+    Likelihood level: with `likelihood_scale` and `window_months` the share of months in the window
+    with at least one event of the group is mapped onto the scale; otherwise it is a rank.
     """
     by = list(by)
     # Exposure only counts years that have failure data, so rates stay per operating year.
     business = business[business["month"].dt.year.isin(priced["month"].dt.year.unique())]
     events = priced.drop_duplicates("event_idx")
+    events = events.assign(event_month=events["timestamp_start"].dt.to_period("M"))
+    use_lik = likelihood_scale is not None and window_months
     use_scale = limits is not None and scale is not None
     if use_scale:
         event_loss = priced.groupby("event_idx")["opportunity_loss_rp"].sum().reindex(events["event_idx"]).to_numpy()
         events = events.assign(impact_ratio=event_loss / events["timestamp_start"].dt.year.map(limits).to_numpy())
     named = {"events": ("event_idx", "size"), "downtime_hours": ("failure_duration_hours", "sum"),
-             "mean_repair_hours": ("failure_duration_hours", "mean")}
+             "mean_repair_hours": ("failure_duration_hours", "mean"), "event_months": ("event_month", "nunique")}
     if use_scale:
         named["impact_ratio"] = ("impact_ratio", "mean")
     ev = events.groupby(by).agg(**named)
@@ -81,10 +93,15 @@ def risk_table(priced, business, by=("unit", "system"), limits=None, scale=None)
     t["mean_loss_per_event_rp"] = t["opportunity_loss_rp"] / t["events"]
     t["expected_annual_loss_rp"] = t["events_per_year"] * t["mean_loss_per_event_rp"]
     t["expected_annual_loss_mwh"] = t["events_per_year"] * t["lost_mwh"] / t["events"]
-    t["likelihood"] = _level(t["events_per_year"])
+    if use_lik:
+        t["likelihood_pct"] = t["event_months"] / window_months * 100
+        t["likelihood"] = scale_level(t["likelihood_pct"] / 100, likelihood_scale).astype(int)
+        t["likelihood_scale"] = t["likelihood"].map({i + 1: name for i, (name, _) in enumerate(likelihood_scale)})
+    else:
+        t["likelihood"] = _level(t["events_per_year"])
     if use_scale:
         t["impact_pct"] = t["impact_ratio"] * 100
-        t["consequence"] = impact_level(t["impact_ratio"], scale).fillna(_level(t["mean_loss_per_event_rp"])).astype(int)
+        t["consequence"] = scale_level(t["impact_ratio"], scale).fillna(_level(t["mean_loss_per_event_rp"])).astype(int)
         t["impact_scale"] = t["consequence"].map({i + 1: name for i, (name, _) in enumerate(scale)})
         t = t.drop(columns="impact_ratio")
     else:

@@ -43,6 +43,16 @@ impact_scale:   # upper bound of each level, as a share of the risk limit
   - {name: High, upper: 0.8}
   - {name: Very High, upper: 1.0}
 
+# Likelihood (probability) scale: share of the months in the window in which the failure occurred
+# at least once. The window is the selected years; with more than five years selected, the latest five.
+likelihood_scale:   # upper bound of each level, as a share of the window's months
+  - {name: Rare, upper: 0.2}
+  - {name: Unlikely, upper: 0.4}
+  - {name: Possible, upper: 0.6}
+  - {name: Likely, upper: 0.8}
+  - {name: Almost certain, upper: 1.0}
+max_window_years: 5
+
 opportunity_loss:
   # bpp_rp_kwh or selling_price_rp_kwh, looked up for the month the loss occurred
   price_basis: bpp_rp_kwh
