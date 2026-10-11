@@ -318,7 +318,8 @@ def monthly_loss_chart(year):
     by_unit = (mon.assign(m=mon["month"].dt.month).groupby(["unit", "m"])["opportunity_loss_rp"].sum()
                .reindex(grid, fill_value=0).div(1e6).rename("loss_m").reset_index())
     by_unit["month_name"] = by_unit["m"].map(lambda m: MONTH_NAMES[m - 1])
-    total = by_unit.groupby(["m", "month_name"], as_index=False)["loss_m"].sum()
+    total = by_unit.groupby(["m", "month_name"], as_index=False)["loss_m"].sum().sort_values("m")
+    total["cumulative_m"] = total["loss_m"].cumsum()  # running total from January of the year
     x = alt.X("month_name:N", sort=MONTH_NAMES, title="Month", axis=alt.Axis(labelAngle=0))
     bars = alt.Chart(by_unit).mark_bar().encode(
         x=x, xOffset=alt.XOffset("unit:N"), y=alt.Y("loss_m:Q", title="Opportunity loss (Rp million)"),
@@ -327,7 +328,12 @@ def monthly_loss_chart(year):
     line = alt.Chart(total).mark_line(point=True, color="orange").encode(
         x=x, y="loss_m:Q",
         tooltip=["month_name", alt.Tooltip("loss_m:Q", title="Total of units (Rp million)", format=",.0f")])
-    return alt.layer(bars, line)
+    cumulative = alt.Chart(total).mark_line(point=True, color="crimson", strokeDash=[5, 3]).encode(
+        x=x, y=alt.Y("cumulative_m:Q", title="Cumulative since January (Rp million)",
+                     axis=alt.Axis(orient="right", titleColor="crimson", labelColor="crimson")),
+        tooltip=["month_name", alt.Tooltip("cumulative_m:Q", title="Cumulative (Rp million)", format=",.0f")])
+    # bars and the monthly total share the left axis; the cumulative line gets its own right axis
+    return alt.layer(alt.layer(bars, line), cumulative).resolve_scale(y="independent")
 
 
 with tab_trend:
@@ -337,6 +343,7 @@ with tab_trend:
             st.altair_chart(monthly_loss_chart(year),
                             alt=f"Grouped bars of opportunity loss per unit by month in {year}, with the monthly total as a line")
     st.caption("Bars: each unit's loss. Orange line: sum of the units for the month. "
+               "Dashed red line (right axis): running total of that sum since January of the year. "
                "Follows the sidebar Units, Years, Event classes and price settings.")
 
 with tab_events:
