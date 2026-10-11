@@ -221,6 +221,21 @@ def kpi_chart(k, col, label, zero):
         tooltip=["year", "month_name", alt.Tooltip(f"{col}:Q", title=label, format=",.2f")])
 
 
+def kpi_unit_chart(per_unit, total, col, label, by_unit=True):
+    """One year: a clustered bar per unit for each month, plus the plant value as a line."""
+    x = alt.X("month_name:N", sort=MONTH_NAMES, title="Month", axis=alt.Axis(labelAngle=0))
+    line = alt.Chart(total).mark_line(point=True, color="orange").encode(
+        x=x, y=alt.Y(f"{col}:Q", title=label, scale=alt.Scale(zero=True)),
+        tooltip=["month_name", alt.Tooltip(f"{col}:Q", title=f"Plant, {label}", format=",.2f")])
+    if not by_unit:
+        return line
+    bars = alt.Chart(per_unit).mark_bar().encode(
+        x=x, xOffset=alt.XOffset("unit:N"), y=alt.Y(f"{col}:Q", title=label, scale=alt.Scale(zero=True)),
+        color=alt.Color("unit:N", title="Unit"),
+        tooltip=["unit", "month_name", alt.Tooltip(f"{col}:Q", title=label, format=",.2f")])
+    return alt.layer(bars, line)
+
+
 with tab_rank:
     status = st.selectbox("Status", list(RANK_STATUS), format_func=lambda s: f"{s} - {RANK_STATUS[s]}")
     chosen = scoped[scoped["unit_status"] == status]
@@ -373,16 +388,52 @@ with tab_quality:
                  column_config={"expenses_rp": st.column_config.NumberColumn("Expenses (Rp)", format="%,.0f")})
     download_buttons(maint.rename(columns=MAINT_LABELS), "maintenance_cost")
 
-with tab_kpi:
-    st.caption("Totals and rates cover the units and years selected in the sidebar.")
-    kp = monthly_kpis(data["business"], sel_units, data["coal"])
-    kp = kp[kp["month"].dt.year.isin(sel_years)]
+def kpi_grid(draw):
+    """The eight KPI panels, two per row in the order of KPI_SPECS; `draw(key, title, unit_label, zero)` fills a panel."""
     for i in range(0, len(KPI_SPECS), 2):
         for col, (key, title, unit_label, zero) in zip(st.columns(2), KPI_SPECS[i:i + 2]):
             with col.container(border=True):
                 st.subheader(f"{title} ({unit_label})")
+                draw(key, title, unit_label, zero)
+                st.caption(KPI_NOTES[key])
+
+
+with tab_kpi:
+    st.caption("Units and the years available come from the sidebar.")
+    view_years, view_unit = st.tabs(["Compare years", "Single year by unit"])
+
+    with view_years:
+        cmp_years = st.multiselect("Years to compare", sorted(sel_years), default=sorted(sel_years))
+        if not cmp_years:
+            st.info("Select at least one year.", icon=":material/info:")
+        else:
+            kp = monthly_kpis(data["business"], sel_units, data["coal"])
+            kp = kp[kp["month"].dt.year.isin(cmp_years)]
+
+            def draw_years(key, title, unit_label, zero):
                 if kp[key].notna().any():
                     st.altair_chart(kpi_chart(kp, key, unit_label, zero), alt=f"{title} by month")
                 else:
                     st.info("No data available for this KPI.", icon=":material/info:")
-                st.caption(KPI_NOTES[key])
+
+            kpi_grid(draw_years)
+
+    with view_unit:
+        one_year = st.selectbox("Year", sorted(sel_years), index=len(sel_years) - 1)
+        per_unit = pd.concat([monthly_kpis(data["business"], [u], data["coal"]).assign(unit=u)
+                              for u in sorted(sel_units)], ignore_index=True)
+        per_unit = per_unit[per_unit["month"].dt.year == one_year]
+        plant = monthly_kpis(data["business"], sel_units, data["coal"])
+        plant = plant[plant["month"].dt.year == one_year]
+
+        def draw_unit(key, title, unit_label, zero):
+            if not plant[key].notna().any():
+                st.info("No data available for this KPI.", icon=":material/info:")
+                return
+            st.altair_chart(kpi_unit_chart(per_unit, plant, key, unit_label, by_unit=key != "coal_reserve_days"),
+                            alt=f"{title} by month in {one_year}, per unit with the plant value as a line")
+
+        kpi_grid(draw_unit)
+        st.caption("Bars: each unit. Orange line: the plant value for the selected units - the sum for energy and "
+                   "fuel figures, the period-hour-weighted average for rates and factors. Coal reserve days are "
+                   "plant level, so they show the line only.")
